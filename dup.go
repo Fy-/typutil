@@ -63,12 +63,10 @@ func deepCloneReflect(src reflect.Value, ptrs *deepCloneContext) reflect.Value {
 		if src.IsNil() {
 			return reflect.New(src.Type()).Elem()
 		}
-		// TODO in case of slice, multiple slices may point to the same data but have different len
 		ptr := src.Pointer()
 		if r, ok := ptrs.get(src.Type(), ptr); ok {
 			return r
 		}
-		// duplicate the value
 		size := src.Len()
 		dst := reflect.MakeSlice(src.Type(), src.Len(), src.Cap())
 		for i := 0; i < size; i++ {
@@ -105,7 +103,6 @@ func deepCloneReflect(src reflect.Value, ptrs *deepCloneContext) reflect.Value {
 			if r, ok := ptrs.get(src.Type(), ptr); ok {
 				return r
 			}
-			// generate a new target for value
 			newV := reflect.New(src.Type().Elem())
 			newV.Elem().Set(deepCloneReflect(src.Elem(), ptrs))
 			newPtr.Set(newV)
@@ -115,7 +112,6 @@ func deepCloneReflect(src reflect.Value, ptrs *deepCloneContext) reflect.Value {
 	case reflect.Interface:
 		newPtr := reflect.New(src.Type()).Elem()
 		if !src.IsNil() {
-			// generate a new target for value
 			newV := reflect.New(src.Elem().Type())
 			newV.Elem().Set(deepCloneReflect(src.Elem(), ptrs))
 			newPtr.Set(newV)
@@ -123,16 +119,27 @@ func deepCloneReflect(src reflect.Value, ptrs *deepCloneContext) reflect.Value {
 		return newPtr
 	case reflect.Struct:
 		dst := reflect.New(src.Type()).Elem()
-		dst.Set(src) // first, make a shallow copy so we have a guaranteed addressable version of the struct
+		dst.Set(src) // shallow copy first
 		n := src.NumField()
-		for i := 0; i < n; i += 1 {
-			if !src.Type().Field(i).IsExported() {
-				// accessing unexported fields normally will cause panic, so we do it the not normal way
-				field := dst.Field(i)
-				val := deepCloneReflect(reflect.NewAt(field.Type(), unsafe.Pointer(dst.Field(i).UnsafeAddr())).Elem(), ptrs)
-				reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(val)
+		structType := src.Type()
+
+		for i := 0; i < n; i++ {
+			field := structType.Field(i)
+
+			// NEW: Check for clone:"-" tag — skip this field entirely if present
+			if tag := field.Tag.Get("clone"); tag == "-" {
 				continue
 			}
+
+			if !field.IsExported() {
+				// unexported field: use unsafe to deep clone
+				f := dst.Field(i)
+				val := deepCloneReflect(reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem(), ptrs)
+				reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Set(val)
+				continue
+			}
+
+			// exported field: normal deep clone
 			dst.Field(i).Set(deepCloneReflect(dst.Field(i), ptrs))
 		}
 		return dst
